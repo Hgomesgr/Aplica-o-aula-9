@@ -1,53 +1,42 @@
 import streamlit as st
 import cv2
 import numpy as np
-from PIL import Image
 from ultralytics import YOLO
+from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, RTCConfiguration
 
-st.set_page_config(page_title="Detecção de Objetos com YOLO", layout="centered")
+st.set_page_config(page_title="YOLO Tempo Real", layout="centered")
 
 @st.cache_resource
 def load_model():
+    # Modelo ultraleve para manter alta taxa de frames em CPU
     return YOLO("yolov8n.pt")
 
 model = load_model()
 
-st.title("Detecção de Objetos em Tempo Real")
-st.write("Faça o upload de uma imagem para identificar objetos como pessoas, carros, animais e mais.")
+st.title("Detecção de Objetos com Câmera")
+st.write("Permita o acesso à sua câmera para detectar objetos em tempo real.")
 
-uploaded_file = st.file_uploader("Escolha uma imagem...", type=["jpg", "jpeg", "png"])
+# Configuração de servidores STUN para conexão WebRTC no Render
+RTC_CONFIGURATION = RTCConfiguration(
+    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+)
 
-if uploaded_file is not None:
-    image = Image.open(uploaded_file).convert("RGB")
-    img_array = np.array(image)
+class YOLOVideoProcessor(VideoTransformerBase):
+    def transform(self, frame):
+        # Converte o frame do WebRTC para array OpenCV BGR
+        img = frame.to_ndarray(format="bgr24")
 
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("Imagem Original")
-        st.image(image, use_container_width=True)
-
-    with st.spinner("Processando imagem..."):
-        # imgsz=320 reduz significativamente o consumo de RAM no CPU
-        results = model.predict(source=img_array, imgsz=320, conf=0.25)
+        # Processa a imagem com dimensão reduzida (imgsz=320) para economizar RAM e CPU
+        results = model.predict(source=img, imgsz=320, conf=0.3, verbose=False)
         
-        res_plotted = results[0].plot()
-        res_image = Image.fromarray(cv2.cvtColor(res_plotted, cv2.COLOR_BGR2RGB))
+        # Desenha os Bounding Boxes na imagem
+        annotated_frame = results[0].plot()
 
-    with col2:
-        st.subheader("Objetos Detectados")
-        st.image(res_image, use_container_width=True)
+        return annotated_frame
 
-    # Lista resumo dos objetos identificados
-    boxes = results[0].boxes
-    if len(boxes) > 0:
-        st.markdown("---")
-        st.subheader("Resumo da Detecção")
-        detected_names = [model.names[int(cls)] for cls in boxes.cls]
-        
-        counts = {}
-        for name in detected_names:
-            counts[name] = counts.get(name, 0) + 1
-            
-        for obj, count in counts.items():
-            st.write(f"- **{obj.capitalize()}**: {count}")
+webrtc_streamer(
+    key="yolo-realtime",
+    video_processor_factory=YOLOVideoProcessor,
+    rtc_configuration=RTC_CONFIGURATION,
+    media_stream_constraints={"video": True, "audio": False},
+)
